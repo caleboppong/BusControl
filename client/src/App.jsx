@@ -314,7 +314,12 @@ function ControlBoard(props) {
             direction={props.direction}
             routeMatchedIncidents={props.matches}
             affectedGeometry={props.affected?.affectedGeometry}
-            diversionGeometry={props.proposal?.geometry}
+            diversionGeometry={
+              props.manualDiversionPreview?.geometry ||
+              (["DRAW", "EDIT"].includes(props.diversionEditMode)
+                ? null
+                : props.proposal?.geometry)
+            }
             diversionEditMode={props.diversionEditMode}
             diversionDraftPoints={props.diversionDraftPoints}
             onDiversionMapClick={props.onDiversionMapClick}
@@ -540,9 +545,10 @@ function Incidents({
                   routeMatchedIncidents={matches}
                   affectedGeometry={affected.affectedGeometry}
                   diversionGeometry={
-                    diversionEditMode === "DRAW"
+                    manualDiversionPreview?.geometry ||
+                    (["DRAW", "EDIT"].includes(diversionEditMode)
                       ? null
-                      : proposal?.geometry
+                      : proposal?.geometry)
                   }
                   diversionEditMode={diversionEditMode}
                   diversionDraftPoints={diversionDraftPoints}
@@ -634,13 +640,81 @@ function Incidents({
                         {manualDiversionPreview?.requiresOverride && (
                           <div className="controller-override-warning">
                             <strong>CONTROLLER OVERRIDE REQUIRED</strong>
+
                             <p>
-                              Google Routes could not reproduce{" "}
+                              Google Routes could not safely reproduce{" "}
                               {manualDiversionPreview.failedSegments?.length || 0}{" "}
-                              controller-selected movement(s). BusControl has preserved
-                              those selected sections for review. Accepting this route
-                              requires an operational reason such as a local bus turning
-                              exemption.
+                              controller-selected movement(s). Review each movement below
+                              before accepting this diversion.
+                            </p>
+
+                            <div className="controller-override-segments">
+                              {(manualDiversionPreview.failedSegments || []).map((segment) => {
+                                const segmentIndex = Number(segment.index) || 0;
+                                const totalPoints =
+                                  manualDiversionPreview.controllerPoints?.length ||
+                                  diversionDraftPoints.length;
+
+                                const fromLabel =
+                                  segmentIndex === 0 ? "S" : String(segmentIndex);
+
+                                const toLabel =
+                                  segmentIndex + 1 === totalPoints - 1
+                                    ? "R"
+                                    : String(segmentIndex + 1);
+
+                                const reasonLabel =
+                                  segment.reason === "EXCESSIVE_GOOGLE_DETOUR"
+                                    ? "Excessive Google detour"
+                                    : segment.reason === "GOOGLE_ROUTE_UNAVAILABLE"
+                                      ? "Google route unavailable"
+                                      : "Controller review required";
+
+                                return (
+                                  <div
+                                    className="controller-override-segment"
+                                    key={`override-${segmentIndex}`}
+                                  >
+                                    <div className="controller-override-segment-heading">
+                                      <strong>
+                                        {fromLabel} → {toLabel}
+                                      </strong>
+
+                                      <span>{reasonLabel}</span>
+                                    </div>
+
+                                    {segment.reason === "EXCESSIVE_GOOGLE_DETOUR" && (
+                                      <div className="controller-override-metrics">
+                                        <span>
+                                          Direct:{" "}
+                                          {Number(segment.directDistanceMetres || 0).toLocaleString()} m
+                                        </span>
+
+                                        <span>
+                                          Google:{" "}
+                                          {Number(segment.googleDistanceMetres || 0).toLocaleString()} m
+                                        </span>
+
+                                        <span>
+                                          Detour: {Number(segment.detourRatio || 0).toFixed(1)}×
+                                        </span>
+                                      </div>
+                                    )}
+
+                                    {segment.message && (
+                                      <p className="controller-override-message">
+                                        {segment.message}
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            <p className="controller-override-instruction">
+                              Verify that the bus is operationally permitted to make each
+                              flagged movement. Accepting this route will require a controller
+                              override reason.
                             </p>
                           </div>
                         )}
@@ -869,46 +943,162 @@ function DiversionOperations({
         <div className="selected-incident-panel">
           <span className="panel-kicker">CONTROLLER SAFETY REVIEW</span>
           <h3>Risk and route verification</h3>
+
           <div className="risk-box">
-            <strong>{diversion.risk?.level?.replaceAll("_", " ") || "REVIEW REQUIRED"}</strong>
+            <strong>
+              {diversion.risk?.level?.replaceAll("_", " ") || "REVIEW REQUIRED"}
+            </strong>
+
             {(diversion.risk?.warnings || []).map((warning, index) => (
               <p key={index}>• {warning}</p>
             ))}
           </div>
+
           <div className="workflow-grid">
             <div>
-              <span>GEOMETRY SOURCE</span>
-              <strong>{diversion.routeAnalysis?.geometrySource || "TfL route data"}</strong>
-            </div>
-            <div>
-              <span>ROUTE DISTANCE</span>
+              <span>DIVERSION SOURCE</span>
               <strong>
-                {diversion.routeAnalysis?.distanceFromIncidentMetres ??
-                  diversion.affectedSection?.distanceFromRouteMetres ??
-                  "—"} m
+                {diversion.routeSource === "CONTROLLER_OVERRIDE"
+                  ? "Controller Override"
+                  : diversion.routeSource === "CONTROLLER_DRAWN"
+                    ? "Controller Drawn"
+                    : diversion.routingProvider === "google"
+                      ? "Google Routes"
+                      : "Automatic Diversion"}
               </strong>
             </div>
+
             <div>
-              <span>CONTROLLER CONFIRMED</span>
-              <strong>{diversion.risk?.controllerConfirmed ? "YES" : "NO"}</strong>
+              <span>DIVERSION DISTANCE</span>
+              <strong>{fmtDistance(diversion.distanceMetres)}</strong>
             </div>
+
             <div>
-              <span>GEOMETRY FALLBACK</span>
-              <strong>{diversion.routeAnalysis?.geometryFallbackUsed ? "YES" : "NO"}</strong>
+              <span>CONTROLLER OVERRIDE</span>
+              <strong>{diversion.controllerOverride ? "YES" : "NO"}</strong>
+            </div>
+
+            <div>
+              <span>REVISION</span>
+              <strong>{diversion.revision || 1}</strong>
             </div>
           </div>
+
+          {diversion.controllerOverrideConfirmed && (
+            <div className="controller-override-warning">
+              <strong>CONTROLLER OVERRIDE RECORDED</strong>
+
+              <p>
+                This diversion contains one or more movements that Google Routes
+                could not reproduce normally. The controller explicitly confirmed
+                the operational movement before creating this revision.
+              </p>
+
+              {diversion.controllerOverrideReason && (
+                <div className="audit-row">
+                  <strong>Override reason</strong>
+                  <span>{diversion.controllerOverrideReason}</span>
+                  <small>Controller confirmed</small>
+                </div>
+              )}
+
+              {Array.isArray(diversion.failedSegments) &&
+                diversion.failedSegments.length > 0 && (
+                  <div className="controller-override-segments">
+                    {diversion.failedSegments.map((segment, index) => {
+                      const segmentIndex = Number(segment.index) || 0;
+
+                      const totalPoints =
+                        diversion.controllerPoints?.length || 0;
+
+                      const fromLabel =
+                        segmentIndex === 0
+                          ? "S"
+                          : String(segmentIndex);
+
+                      const toLabel =
+                        totalPoints &&
+                          segmentIndex + 1 === totalPoints - 1
+                          ? "R"
+                          : String(segmentIndex + 1);
+
+                      const reasonLabel =
+                        segment.reason === "EXCESSIVE_GOOGLE_DETOUR"
+                          ? "Excessive Google detour"
+                          : segment.reason === "GOOGLE_ROUTE_UNAVAILABLE"
+                            ? "Google route unavailable"
+                            : "Controller verification";
+
+                      return (
+                        <div
+                          className="controller-override-segment"
+                          key={`${segmentIndex}-${index}`}
+                        >
+                          <div className="controller-override-segment-heading">
+                            <strong>
+                              {fromLabel} → {toLabel}
+                            </strong>
+
+                            <span>{reasonLabel}</span>
+                          </div>
+
+                          {segment.reason === "EXCESSIVE_GOOGLE_DETOUR" && (
+                            <div className="controller-override-metrics">
+                              <span>
+                                Direct:{" "}
+                                {Number(
+                                  segment.directDistanceMetres || 0,
+                                ).toLocaleString()}{" "}
+                                m
+                              </span>
+
+                              <span>
+                                Google:{" "}
+                                {Number(
+                                  segment.googleDistanceMetres || 0,
+                                ).toLocaleString()}{" "}
+                                m
+                              </span>
+
+                              <span>
+                                Detour:{" "}
+                                {Number(
+                                  segment.detourRatio || 0,
+                                ).toFixed(1)}
+                                ×
+                              </span>
+                            </div>
+                          )}
+
+                          {segment.message && (
+                            <p className="controller-override-message">
+                              {segment.message}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+            </div>
+          )}
         </div>
+
         <div className="selected-incident-panel">
           <span className="panel-kicker">LIFECYCLE</span>
           <h3>Approval and activation record</h3>
+
           <div className="audit-row">
             <strong>Created</strong>
+
             <span>
               Revision {diversion.revision || 1}
               {diversion.revisionOfId ? " · revised proposal" : ""}
             </span>
+
             <small>{when(diversion.createdAt)}</small>
           </div>
+
           {diversion.revisionReason && (
             <div className="audit-row">
               <strong>Revision reason</strong>
@@ -916,16 +1106,38 @@ function DiversionOperations({
               <small>Controller recalculation</small>
             </div>
           )}
+
+          {diversion.controllerOverrideConfirmed && (
+            <div className="audit-row">
+              <strong>Controller override</strong>
+
+              <span>
+                {diversion.controllerOverrideReason ||
+                  "Controller override confirmed"}
+              </span>
+
+              <small>Verified before acceptance</small>
+            </div>
+          )}
+
           <div className="audit-row">
             <strong>Approved</strong>
             <span>{diversion.approvedBy || "—"}</span>
             <small>{when(diversion.approvedAt)}</small>
           </div>
+
           <div className="audit-row">
             <strong>Activated</strong>
-            <span>{diversion.activatedAt ? "Issued to drivers" : "—"}</span>
+
+            <span>
+              {diversion.activatedAt
+                ? "Issued to drivers"
+                : "—"}
+            </span>
+
             <small>{when(diversion.activatedAt)}</small>
           </div>
+
           {diversion.endedAt && (
             <div className="audit-row">
               <strong>Ended</strong>
@@ -1637,20 +1849,39 @@ function Controller() {
   };
 
   const calculateDiversionPreview = async () => {
-    if (!proposal || diversionDraftPoints.length < 2) return;
+    console.log("CALCULATE CLICKED", {
+      proposalId: proposal?.id,
+      pointCount: diversionDraftPoints.length,
+      points: diversionDraftPoints,
+    });
+
+    if (!proposal || diversionDraftPoints.length < 2) {
+      console.log("CALCULATION STOPPED", {
+        hasProposal: Boolean(proposal),
+        pointCount: diversionDraftPoints.length,
+      });
+      return;
+    }
 
     setBusy(true);
     setError("");
 
     try {
+      console.log("SENDING MANUAL ROUTE REQUEST");
+
       const response = await calculateManualDiversionRoute(
         proposal.id,
         diversionDraftPoints,
       );
+
+      console.log("MANUAL ROUTE RESPONSE", response);
+
       setManualDiversionPreview(response.preview);
     } catch (routeError) {
-      console.error(routeError);
+      console.error("MANUAL ROUTE ERROR", routeError);
+
       setManualDiversionPreview(null);
+
       setError(
         routeError.response?.data?.message ||
         "Unable to calculate the controller diversion.",
@@ -1661,37 +1892,69 @@ function Controller() {
   };
 
   const acceptDiversionPreview = async () => {
-    if (!proposal || !manualDiversionPreview || diversionDraftPoints.length < 2) {
+    if (
+      !proposal ||
+      !manualDiversionPreview ||
+      diversionDraftPoints.length < 2
+    ) {
       return;
     }
 
-    const reason = window.prompt(
+    const revisionReason = window.prompt(
       "Reason for changing the automatic diversion:",
       diversionEditMode === "DRAW"
         ? "Controller selected a different operational diversion."
         : "Controller adjusted the suggested diversion route.",
     );
 
-    if (reason === null) return;
+    if (revisionReason === null) {
+      return;
+    }
 
     let confirmOverride = false;
     let overrideReason = "";
 
     if (manualDiversionPreview.requiresOverride) {
-      confirmOverride = window.confirm(
-        "Google Routes could not reproduce one or more selected movements. Confirm only if the controller has verified that the bus is permitted to make these movements, for example under a local bus exemption.",
+      const flaggedSegments =
+        manualDiversionPreview.failedSegments || [];
+
+      const segmentNames = flaggedSegments
+        .map((segment) => {
+          const index = Number(segment.index) || 0;
+          const totalPoints =
+            manualDiversionPreview.controllerPoints?.length ||
+            diversionDraftPoints.length;
+
+          const from =
+            index === 0 ? "S" : String(index);
+
+          const to =
+            index + 1 === totalPoints - 1
+              ? "R"
+              : String(index + 1);
+
+          return `${from} → ${to}`;
+        })
+        .join(", ");
+
+      overrideReason = window.prompt(
+        [
+          "CONTROLLER OVERRIDE REQUIRED",
+          "",
+          `Movements requiring verification: ${segmentNames}`,
+          "",
+          "Only continue if you have verified that the bus is permitted to make these movements.",
+          "",
+          "Enter the operational reason for the override:",
+        ].join("\n"),
+        "Test only - controller verified local bus movement.",
       );
 
-      if (!confirmOverride) return;
+      if (overrideReason === null) {
+        return;
+      }
 
-      const enteredOverrideReason = window.prompt(
-        "Enter the operational reason for this controller override:",
-        "Local bus turning exemption confirmed by controller.",
-      );
-
-      if (enteredOverrideReason === null) return;
-
-      overrideReason = enteredOverrideReason.trim();
+      overrideReason = overrideReason.trim();
 
       if (overrideReason.length < 5) {
         setError(
@@ -1699,6 +1962,8 @@ function Controller() {
         );
         return;
       }
+
+      confirmOverride = true;
     }
 
     setBusy(true);
@@ -1708,21 +1973,35 @@ function Controller() {
       const response = await acceptManualDiversionRoute(
         proposal.id,
         diversionDraftPoints,
-        reason.trim() || "Controller manually adjusted diversion route.",
+        revisionReason.trim() ||
+        "Controller manually adjusted diversion route.",
         confirmOverride,
         overrideReason,
       );
 
+      if (!response?.diversion) {
+        throw new Error(
+          "The server did not return the accepted diversion revision.",
+        );
+      }
+
       setProposal(response.diversion);
       setSelectedDiversion(response.diversion);
+
       setDiversionEditMode("VIEW");
       setDiversionDraftPoints([]);
       setManualDiversionPreview(null);
+
       await load();
     } catch (routeError) {
-      console.error(routeError);
+      console.error(
+        "Unable to accept controller diversion:",
+        routeError,
+      );
+
       setError(
         routeError.response?.data?.message ||
+        routeError.message ||
         "Unable to save the controller diversion.",
       );
     } finally {
@@ -1916,6 +2195,7 @@ function Controller() {
               openDiversion,
               diversionEditMode,
               diversionDraftPoints,
+              manualDiversionPreview,
               onDiversionMapClick: handleDiversionMapClick,
               onRemoveDiversionDraftPoint: handleRemoveDiversionDraftPoint,
             }}
